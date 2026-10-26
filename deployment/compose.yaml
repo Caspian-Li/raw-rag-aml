@@ -1,0 +1,30 @@
+services:
+  memory:
+    build:
+      context: ..
+      args:
+        AML_BUILD_COMMIT: ${AML_BUILD_COMMIT:-unrecorded}
+    image: raw-rag-aml:0.1.0
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      AML_DATABASE: /app/data/memory.sqlite3
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - memory-data:/app/data
+    init: true
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  memory-data:

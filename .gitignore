@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+data/
+logs/
+dist/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.sqlite3*
+*.db*
+*.lock
+*.pem
+*.key
+*.tar.gz
+.coverage

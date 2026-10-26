@@ -1,0 +1,11 @@
+# Replace this example with the actual DNS name before running Caddy.
+memory.your-domain.example {
+    request_body {
+        max_size 16777216
+    }
+    reverse_proxy 127.0.0.1:8000 {
+        transport http {
+            response_header_timeout 30m
+        }
+    }
+}

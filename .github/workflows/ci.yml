@@ -1,0 +1,36 @@
+name: Verify API and deployment image
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-test.lock.txt
+      - run: python scripts/verify_release.py
+      - run: python -m pip check
+      - run: python -m pytest -q
+      - run: docker build -t raw-rag-aml:ci .
+      - name: Verify container startup without making upstream calls
+        shell: bash
+        run: |
+          docker run -d --name rawrag-ci -p 127.0.0.1:8000:8000 \
+            -e AML_MEMORY_KEY=offline-ci-memory-key-0000000000000000 \
+            -e AML_EMBEDDING_API_KEY=offline-not-a-real-key \
+            -e AML_RERANK_API_KEY=offline-not-a-real-key \
+            -e AML_EMBEDDING_BASE_URL=https://embed.invalid/v1 \
+            raw-rag-aml:ci
+          for i in $(seq 1 20); do
+            if curl --fail --silent http://127.0.0.1:8000/health; then
+              docker stop rawrag-ci
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs rawrag-ci
+          docker stop rawrag-ci
+          exit 1
