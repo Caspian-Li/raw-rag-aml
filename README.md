@@ -2,7 +2,7 @@
 
 基于 [Litmeb/RAW-RAG](https://github.com/Litmeb/RAW-RAG) 的 **AML 开源方法榜适配版本**。完整上游源码固定在 `vendor/raw-rag/`；731 个跟踪文件未修改，校验清单为 `UPSTREAM.json`。新增服务直接调用上游分块、完整消息映射、余弦召回及 Cohere 重排实现，不将方法重新写成另一套 RAG。
 
-**当前状态：本地代码与部署包；不是已上线服务，也没有取得官方 Smoke/Full 成绩。** 目标 GitHub 命名空间为 `Caspian-Li/raw-rag-aml`，是否已发布须以实际远端为准。GitHub 托管代码，不能替代运行 API 的服务器。
+公开仓库为 `Caspian-Li/raw-rag-aml`，API 在独立服务器上运行。实际部署版本和查询处理策略以 `/version` 为准；GitHub 托管代码，不能替代运行 API 的服务器。
 
 ## 方法与署名
 
@@ -24,13 +24,28 @@
 | 完整消息展开/去重 | 开启展开，关闭去重；不按时间重新排序 |
 | Add | 同步，成功前已落盘并完成向量索引；原子追加、幂等 |
 | Search | 只返回原文证据，不调用 reader，不接收 gold/question_date |
+| 查询 Embedding 长度保护（v0.1.1） | 仅向量化输入保留前缀，本地 cl100k_base 预算 8,192 Token；详情见下节 |
 | Answer / Eval | 平台负责；本服务主动禁用 answer() |
 | 存储 | SQLite WAL，单服务进程，向量无损 float64-le 保存 |
-| 并发默认上限 | Add 2、Search 2；不是已验证的 Full 吞吐能力 |
+| 并发 | 默认 Add 2、Search 2，各可配置 1–16；当前参赛服务器各为 16，不代表 Full 吞吐保证 |
 | 单请求上限 | 16 MiB 请求正文，1700 秒服务操作超时 |
 | 数据过期 | 用户记忆闲置 29 天后删除，每 10 分钟检查；无自动外部备份 |
 
 本地原版 LongMemEval-S 的 89.67% 属于不同 embedding、reader、提示词及评分协议，**不是本项目 AML 成绩**，不作为本服务准确率承诺。
+
+## 超长 Search 查询处理（v0.1.1）
+
+Search 收到的 `query` 可能包含长表格或上下文。v0.1.1 在查询 Embedding 的 HTTP 入口增加确定性的前缀截断，防止供应商输入长度错误导致整个 Search 失败。这是对原始 RAW-RAG 的方法输入改动，需要随提交版本披露；超长查询尾部的信息可能不再参与向量召回，因此不能保证原有检索结果或分数不变。
+
+- 依据[百炼同步 Embedding 文档](https://help.aliyun.com/zh/model-studio/text-embedding-synchronous-api)公开的 text-embedding-v4 单条 8,192 Token 上限，使用现有 `cl100k_base` 作**本地参考预算**，超出时保留前缀；本地预算内的文本初次请求逐字保留，仍受下述供应商用量校正约束。解码时移除不完整的尾部 UTF-8 字符，不插入替换字符。
+- `cl100k_base` 不被宣称为百炼模型的原生 tokenizer。线上曾返回 `Range of input length should be [1, 33000]`，该错误未标明单位，因此不将 33,000 直接作为 Token 预算。
+- 对单条查询，若成功响应的 `usage.total_tokens` 仍超过 8,192，则按预算与实际 Token 数的比例进一步缩短当前前缀并重新编码，丢弃超预算的中间向量。供应商长度拒绝与用量校正共用每轮最多 3 次缩短额度。正常短查询无额外编码请求；超长查询可能有额外费用和延迟。若供应商不提供用量，则只执行本地预算与长度拒绝保护，不声称获知原生 Token 数。
+- 若截断后仍收到明确的 `400 / InvalidParameter / Range of input length ...`，在该轮 Embedding 调用内最多再缩短 3 次，每次将当前前缀的本地 Token 预算减半。其他错误不会触发这种缩短；原上游外层重试机制仍保留。
+- 截断只作用于**查询的 Embedding 输入**。Cohere 重排仍接收原始完整 query；不会拼接 options 或历史，不做摘要、LLM 改写、后缀拼接或查询分块合并。
+- Add 的原文、分块、记忆向量、数据库及返回证据不受该截断操作修改；余弦候选 128、重排最终 15、完整轮次展开和 top_k 契约保持现有设置。
+- `/version.query_embedding_policy` 公布预算、tokenizer、截断方向和回退策略。日志只记录截断事件，不保存原始问题；GitHub 不包含正式评测文本或真实失败请求。
+
+旧索引无需重建：本改动只改变查询预处理，存储索引格式和构建参数保持兼容。索引配置指纹不含该策略，方法变化由 API 版本、部署 commit 和 `query_embedding_policy` 独立标识。恢复正式评测前应向平台说明版本与输入处理变化，并按其要求恢复或重新提交任务。
 
 ## 快速运行（Python 3.12 / Linux）
 
@@ -92,7 +107,7 @@ POST /v1/memories/search
 
 上面的 HTTP 方法/路径是说明标签，不是 JSON 的一部分。完整可执行客户端见 `scripts/smoke_remote.py`。
 
-`timestamp` 是可选 Unix 毫秒，保留传入消息顺序；没有时间时用上游的 unknown-date 展示，不伪造业务日期。选择题可接收顶层 `options`，但不将选项追加进检索 query。这里只实现文本赛道，不接受图片内容数组或 system 消息；不支持的字段/类型返回 422，不静默忽略或截断。
+`timestamp` 是可选 Unix 毫秒，保留传入消息顺序；没有时间时用上游的 unknown-date 展示，不伪造业务日期。选择题可接收顶层 `options`，但不将选项追加进检索 query。这里只实现文本赛道，不接受图片内容数组或 system 消息；不支持的字段/类型返回 422。查询 Embedding 的长度保护按上节执行，不改变原始请求对象。
 
 未知 user_id 返回 `{"data":[]}`。同一 request_id、相同请求重试返回原成功响应且不重复调用模型；相同 request_id 改变正文或用户返回 409。上游失败不提交新快照，返回脱敏的 503 与 Retry-After。原始供应商错误、正文、向量、密钥不写入服务日志。
 

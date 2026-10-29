@@ -10,6 +10,7 @@ from starlette.responses import JSONResponse
 
 from . import __version__
 from .engine import Engine
+from .query_limits import query_embedding_policy
 from .schemas import AddRequest, SearchRequest
 from .settings import Settings, UPSTREAM_COMMIT
 from .storage import Conflict
@@ -101,6 +102,7 @@ def create_app(settings=None, adapter=None):
                 "deployment_commit": os.getenv("AML_BUILD_COMMIT", "unrecorded"),
                 "configuration_sha256": settings.fingerprint(),
                 "embedding_model": "text-embedding-v4", "rerank_model": "rerank-v3.5",
+                "query_embedding_policy": query_embedding_policy(),
                 "answer": "AML platform"}
 
     async def invoke(operation, payload):

@@ -35,8 +35,8 @@ class Settings:
             parsed = urlsplit(url)
             if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
                 raise ValueError("Upstream API base URLs must use HTTPS without credentials, query or fragment")
-        if not 1 <= self.add_concurrency <= 8 or not 1 <= self.search_concurrency <= 8:
-            raise ValueError("Concurrency must be in [1, 8]")
+        if not 1 <= self.add_concurrency <= 16 or not 1 <= self.search_concurrency <= 16:
+            raise ValueError("Concurrency must be in [1, 16]")
         if not 1 <= self.retention_days <= 29:
             raise ValueError("Idle retention must be in [1, 29] days")
         if not 1 <= self.operation_timeout <= 1700 or self.max_body_bytes < 1024:
@@ -66,6 +66,8 @@ class Settings:
     def profile(self):
         return {
             "upstream_commit": UPSTREAM_COMMIT,
+            # Index format/build compatibility, not the API release version.
+            # Query-only preprocessing is disclosed separately by /version.
             "adapter_version": "0.1.0",
             "chunking": {"strategy": "token", "chunk_size": 256, "chunk_overlap": 32,
                          "tokenizer_model": "gpt-4", "expand_turns_on_display": True,

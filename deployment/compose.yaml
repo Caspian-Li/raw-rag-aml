@@ -4,7 +4,7 @@ services:
       context: ..
       args:
         AML_BUILD_COMMIT: ${AML_BUILD_COMMIT:-unrecorded}
-    image: raw-rag-aml:0.1.0
+    image: raw-rag-aml:0.1.1
     restart: unless-stopped
     env_file:
       - ../.env

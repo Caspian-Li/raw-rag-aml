@@ -1,9 +1,16 @@
 """Reuse upstream algorithms; restrict transport and disable answer/logging."""
 from contextvars import ContextVar
 import hashlib
+import logging
 import math
 import sys
 
+from openai import BadRequestError
+
+from .query_limits import (
+    QUERY_EMBEDDING_TOKEN_BUDGET, QUERY_LENGTH_FALLBACKS,
+    is_provider_length_error, query_encoding, query_prefix,
+)
 from .settings import ROOT
 
 EVERCORE = ROOT / "vendor/raw-rag/methods/EverCore"
@@ -13,6 +20,8 @@ from evaluation.src.adapters.rag_adapter import RAGAdapter  # noqa: E402
 from evaluation.src.core.data_models import Conversation, Message  # noqa: E402
 
 add_vector_cache = ContextVar("add_vector_cache", default=None)
+query_embedding_active = ContextVar("query_embedding_active", default=False)
+logger = logging.getLogger("rawrag_aml")
 
 
 class FloatEmbeddingEndpoint:
@@ -20,7 +29,39 @@ class FloatEmbeddingEndpoint:
         self.endpoint = endpoint
 
     async def create(self, **kwargs):
-        response = await self.endpoint.create(**kwargs, encoding_format="float", dimensions=1024)
+        inputs = kwargs["input"]
+        if query_embedding_active.get():
+            inputs = [query_prefix(text) for text in inputs]
+            if inputs != kwargs["input"]:
+                logger.warning("Query embedding input truncated to local token budget")
+        for attempt in range(QUERY_LENGTH_FALLBACKS + 1):
+            try:
+                response = await self.endpoint.create(
+                    **{**kwargs, "input": inputs}, encoding_format="float", dimensions=1024)
+                usage = getattr(response, "usage", None)
+                used = getattr(usage, "total_tokens", None)
+                if query_embedding_active.get() and len(inputs) == 1 and isinstance(used, int) and used > QUERY_EMBEDDING_TOKEN_BUDGET:
+                    if attempt == QUERY_LENGTH_FALLBACKS:
+                        raise RuntimeError("Query embedding could not satisfy provider token budget")
+                    count = len(query_encoding().encode(inputs[0], disallowed_special=()))
+                    limit = max(1, min(count - 1, count * QUERY_EMBEDDING_TOKEN_BUDGET // used))
+                    shorter = query_prefix(inputs[0], limit)
+                    if not shorter.strip() or shorter == inputs[0]:
+                        raise RuntimeError("Query embedding could not shorten input safely")
+                    inputs = [shorter]
+                    logger.warning("Query embedding prefix shortened to satisfy provider token usage")
+                    continue
+                break
+            except BadRequestError as exc:
+                if not query_embedding_active.get() or not is_provider_length_error(exc) or attempt == QUERY_LENGTH_FALLBACKS:
+                    raise
+                encoding = query_encoding()
+                shorter = [query_prefix(text, max(1, len(encoding.encode(text, disallowed_special=())) // 2))
+                           for text in inputs]
+                if shorter == inputs or any(not text.strip() for text in shorter):
+                    raise
+                inputs = shorter
+                logger.warning("Query embedding prefix shortened after provider input-length rejection")
         data = response.data
         expected = len(kwargs["input"])
         if len(data) != expected or {item.index for item in data} != set(range(expected)):
@@ -76,7 +117,11 @@ class CompetitionAdapter(RAGAdapter):
     async def _embed_texts(self, texts, **kwargs):
         cache = add_vector_cache.get()
         if cache is None:
-            return await super()._embed_texts(texts, **kwargs)
+            token = query_embedding_active.set(kwargs.get("stage") == "search")
+            try:
+                return await super()._embed_texts(texts, **kwargs)
+            finally:
+                query_embedding_active.reset(token)
         digests = [hashlib.sha256(text.encode()).hexdigest() for text in texts]
         missing = dict((digest, text) for digest, text in zip(digests, texts) if digest not in cache)
         if missing:
