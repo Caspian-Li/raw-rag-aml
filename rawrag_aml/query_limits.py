@@ -1,27 +1,15 @@
 """Provider input protection for query embeddings, independent of stored indexes."""
-from functools import lru_cache
 import re
 
-import tiktoken
-
-QUERY_EMBEDDING_TOKEN_BUDGET = 8192
-QUERY_LENGTH_FALLBACKS = 3
+QUERY_EMBEDDING_SAFE_BYTES = 8192
 
 
-@lru_cache(maxsize=1)
-def query_encoding():
-    return tiktoken.get_encoding("cl100k_base")
-
-
-def query_prefix(text, limit=QUERY_EMBEDDING_TOKEN_BUDGET):
-    """Keep an exact Unicode prefix; the local tokenizer is a reference budget."""
-    encoding = query_encoding()
-    tokens = encoding.encode(text, disallowed_special=())
-    if len(tokens) <= limit:
+def query_prefix(text, limit=QUERY_EMBEDDING_SAFE_BYTES):
+    """Conservative UTF-8 prefix, used only after a provider length rejection."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
         return text
-    # A token boundary can split UTF-8. Drop an incomplete trailing character,
-    # rather than introducing replacement characters into the original query.
-    return encoding.decode_bytes(tokens[:limit]).decode("utf-8", errors="ignore")
+    return encoded[:limit].decode("utf-8", errors="ignore")
 
 
 def is_provider_length_error(exc):
@@ -40,15 +28,11 @@ def is_provider_length_error(exc):
 
 def query_embedding_policy():
     return {
-        "version": "prefix-cl100k-8192-v1",
+        "version": "on-length-error-utf8-prefix-8192-v1",
         "scope": "query_embedding_only",
-        "local_token_budget": QUERY_EMBEDDING_TOKEN_BUDGET,
-        "local_tokenizer": "cl100k_base",
-        "provider_tokenizer_equivalence": False,
+        "trigger": "provider_400_InvalidParameter_input_length",
+        "safe_prefix_utf8_bytes": QUERY_EMBEDDING_SAFE_BYTES,
         "keep": "prefix",
-        "length_error_fallbacks_per_embedding_attempt": QUERY_LENGTH_FALLBACKS,
-        "fallback": "halve_current_prefix_token_budget",
-        "provider_usage_budget": QUERY_EMBEDDING_TOKEN_BUDGET,
-        "provider_usage_correction": "shrink_prefix_proportionally_and_reembed",
+        "truncated_retries_per_embedding_attempt": 1,
         "reranker_query": "original",
     }

@@ -18,11 +18,9 @@
 6. 不启动原版 reader/judge。AML 固定 Answer/Eval，因此原 answer_prompt_cot 和原版三次 judge 协议均不参与赛事服务。
 7. Search 最多返回 min(15, top_k) 项。保留原候选 128 和最终 15；没有为了平台上限 100 而静默将最终证据改成 100。
 8. 完整轮次证据直接放入 data[].content；不再依赖客户端读取上游 formatted_context 元数据。保留原文日期和说话人，关闭去重，按 rerank 顺序返回；移除上游 Memory N 的相似度展示标题，不附加任何回答指令。
-9. **v0.1.1：查询 Embedding 前缀截断。** 采用公开文档的 8,192 Token 上限作为本地 cl100k_base 参考预算，保留精确 Unicode 前缀；不声称该 tokenizer 与供应商原生计数相同。明确的供应商输入长度错误可在每轮 Embedding 尝试内触发最多 3 次前缀预算减半；其他错误不做此回退。只有查询向量化输入截断，重排使用原始 query，Add 原文和索引不变。该变化可能影响长查询召回和最终成绩，不与原版等价。策略通过 /version 独立披露，存储索引兼容指纹保持不变，避免无必要地重建已写入的记忆。
+9. **v0.1.1：只对长度拒绝的查询进行 Embedding 前缀截断。** 原始 query 先原样请求；仅百炼明确返回 400 / InvalidParameter / Range of input length 时，保留最多 8,192 UTF-8 字节的有效原文前缀并重试一次。该边界是保守字节数，不是本地 Token 估计，也不代表恰好填满模型最大输入。不使用 usage 比例校正或多轮预算减半。正常成功请求不改变；原始 query 仍用于重排，Add 和索引不变。该变化可能影响原本失败的长查询的召回与分数。策略由 /version 披露，索引兼容指纹保持原值。
 
 ## 工程差异
-
-v0.1.1 对成功 Embedding 响应的单查询 `usage.total_tokens` 增加校正：超过 8,192 时按比例缩短前缀并重新编码。长度错误与用量校正共用每轮最多 3 次缩短额度；这会增加部分长查询的编码费用和延迟。用量缺失时不伪造供应商 Token 统计。此校正同样只作用于查询，不改变 Add 或重排 query。
 
 - FastAPI 提供同步 Add/Search、health、version，支持三种鉴权；无异步 202/状态查询。
 - SQLite WAL/FULL 原子提交消息、块、向量和 request_id 回执；向量采用 float64 little-endian，不做 float32 量化。
